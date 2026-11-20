@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import type { Metadata } from "next";
 import { connection } from "next/server";
+import { requirePageUser } from "@/lib/auth/session";
 import { KnowledgeBrowser } from "@/components/knowledge/knowledge-browser";
 import { PageHeader } from "@/components/shell/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -10,6 +11,7 @@ export const metadata: Metadata = { title: "Knowledge Base" };
 
 async function KnowledgeContent() {
   await connection();
+  await requirePageUser("admin");
   return <KnowledgeBrowser articles={listKb(true)} />;
 }
 

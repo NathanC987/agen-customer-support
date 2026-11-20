@@ -1,5 +1,6 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { mkdirSync } from "node:fs";
+import { randomInt } from "node:crypto";
 import path from "node:path";
 import { SCHEMA } from "./schema";
 
@@ -12,7 +13,15 @@ function open(): DatabaseSync {
   const db = new DatabaseSync(DB_PATH);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+/** Additive migrations for databases created by older versions (CREATE TABLE IF NOT EXISTS won't add columns). */
+function migrate(db: DatabaseSync) {
+  const cols = (table: string) => (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+  if (!cols("messages").includes("client_id")) db.exec("ALTER TABLE messages ADD COLUMN client_id TEXT");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client ON messages(client_id) WHERE client_id IS NOT NULL");
 }
 
 export function db(): DatabaseSync {
@@ -36,16 +45,33 @@ export function run(sql: string, ...params: Params) {
   return db().prepare(sql).run(...params);
 }
 
+let txDepth = 0;
+
+/** Runs fn atomically. Re-entrant: nested calls use savepoints, so helpers can safely wrap their own writes. */
 export function tx<T>(fn: () => T): T {
   const d = db();
-  d.exec("BEGIN");
+  const sp = `sp${txDepth}`;
+  d.exec(txDepth === 0 ? "BEGIN IMMEDIATE" : `SAVEPOINT ${sp}`);
+  txDepth++;
   try {
     const out = fn();
-    d.exec("COMMIT");
+    txDepth--;
+    d.exec(txDepth === 0 ? "COMMIT" : `RELEASE ${sp}`);
     return out;
   } catch (e) {
-    d.exec("ROLLBACK");
+    txDepth--;
+    d.exec(txDepth === 0 ? "ROLLBACK" : `ROLLBACK TO ${sp}; RELEASE ${sp}`);
     throw e;
+  }
+}
+
+/** Collision-checked random id, e.g. uniqueId("ORD", "orders") → ORD48213. */
+export function uniqueId(prefix: string, table: string, column = "id", sep = ""): string {
+  for (let digits = 5; ; digits++) {
+    for (let i = 0; i < 20; i++) {
+      const id = `${prefix}${sep}${randomInt(10 ** (digits - 1), 10 ** digits)}`;
+      if (!get(`SELECT 1 FROM ${table} WHERE ${column} = ?`, id)) return id;
+    }
   }
 }
 

@@ -8,29 +8,38 @@ Built with Next.js 16 (App Router, Cache Components), Tailwind v4 + shadcn/ui, S
 
 ```bash
 npm install
-cp .env.example .env.local     # add your free key from https://aistudio.google.com/apikey
-npm run db:seed                # demo customers, knowledge base, 14 days of history
-npm run dev                    # http://localhost:3000
+cp .env.example .env.local     # add GEMINI_API_KEY (https://aistudio.google.com/apikey) and a JWT_SECRET
+docker compose up -d           # Qdrant vector database on 127.0.0.1:6333
+npm run db:seed                # demo data + users + inventory, then embeds the KB & catalog into Qdrant
+npm run dev                    # http://localhost:3000 → sign in
 ```
 
-Requires Node 22.5+ (uses the built-in `node:sqlite`; no native modules).
-Without a key the app still runs in **heuristic fail-safe mode**: intent is classified by rules and every case is escalated to a human with a templated ticket.
+Requires Node 22.5+ (built-in `node:sqlite`) and Docker (for Qdrant). If Qdrant is down the app keeps working with keyword search.
+
+**Demo logins** (also listed on the sign-in page): admin `admin@nimbus.example` / `Admin@1234`; customers `priya.sharma@example.com`, `marcus.chen@example.com`, `sofia.alvarez@example.com`, `john.doe@example.com`, `liam.obrien@example.com`, `aisha.khan@example.com`, `alex.morgan@example.com` — all `Demo@1234`. New customers can sign up at `/signup`.
 
 | Script | What it does |
 |---|---|
 | `npm run dev` | Dev server |
-| `npm run db:seed` | Reset the database to the demo state (also available in the UI: Settings → Reset demo data) |
-| `npm run eval` | Runs the 6 problem-statement scenarios through the real orchestrator + Gemini and checks intent, tool calls and escalation (paced 20 s apart for free-tier limits; `EVAL_DELAY_MS` to change) |
+| `npm run db:seed` | Reset the database to the demo state and rebuild the vector index (admin UI: Settings → Reset demo data) |
+| `npm run rag:index` | Re-embed the knowledge base + product catalog into Qdrant |
+| `npm run test:security` | 16 deterministic checks (no LLM): refund policy, quote/confirm, exactly-once, duplicates, stock, scoping, injection scanner |
+| `npm run eval` | The 6 problem-statement scenarios through the real orchestrator + Gemini |
 | `npm run lint` / `npm run typecheck` / `npm run build` | Quality gates |
 
-## Free-form chat
+## Security & reliability (v2)
 
-Besides the scenarios, you can chat with Nova as any customer like a normal assistant (try the suggestion chips in an empty chat). Nova sees the customer's full profile (orders, transactions, plan and renewal, actions on file, tickets) plus the conversation, and can:
+| Area | What's in place |
+|---|---|
+| **Authentication** | Sign-up / sign-in, scrypt password hashes, HS256 **JWT** in an httpOnly cookie (or `Authorization: Bearer`), login rate limiting. `src/proxy.ts` gates every page/API; every route handler and server action re-checks the session (`src/lib/auth/session.ts`). |
+| **Authorization** | Two roles. Customers only ever see and act on their own record — the customer id comes from the JWT, never the request body; other customers' resources return 404. Admins get tickets, dashboard, inventory and KB; public sign-up can only create customers. |
+| **Prompt injection** | 3 layers: (1) pattern scanner + spotlighting (customer text and retrieved docs wrapped as untrusted data), (2) the intent LLM also classifies manipulation → *guarded mode* disables every action tool for that turn, (3) money rules enforced in code: refunds need a verifiable reason + daily caps, spending needs customer confirmation. Output guard blocks system-prompt leaks (canary). Everything is logged to *Security events* on the dashboard. |
+| **Confirm before spend** | `place_order` / `upgrade_plan` only create a quote; it executes when the customer presses **Confirm** (or replies "yes" in a later turn). |
+| **No double actions** | Quotes execute exactly once (compare-and-set), chat messages carry an idempotency key, one turn per customer at a time, identical orders within 30 min are blocked, refunds/returns/cancellations/resets are idempotent, every action is one DB transaction, ids are collision-checked. |
+| **Inventory** | 40 products in SQL with live stock; orders decrement atomically (no overselling), cancellations restock, replacements consume stock. Admin **Inventory** page: +/− counters and "Add product" (auto-embedded for search). |
+| **RAG** | Qdrant vector DB + Gemini embeddings: KB articles are chunked and embedded; products are embedded for semantic search ("gift for someone with back pain" → ergonomic chair). Workflow selection combines similarity, intent and reliability. |
 
-- answer questions ("How can you help me?", "What do you know about the AuraSound headphones?", "What did I order last month?")
-- do things **without a ticket**: place an order from the catalog, cancel a processing order (auto-refund), returns/replacements, refunds ≤ $500, plan upgrades/downgrades (prorated), password resets and unlocks
-
-A ticket is only created when a human is genuinely needed: approval limits (refund > $500, order > $1000), fraud/legal/security, a failed fix or low confidence (< 70%), or the customer insisting on a human. Every action updates the customer panel immediately and counts toward "AI actions" on the dashboard.
+See **[SECURITY-DEMO.md](SECURITY-DEMO.md)** for a side-by-side attack demo of v1 vs v2.
 
 ## The agent pipeline
 

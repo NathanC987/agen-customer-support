@@ -3,14 +3,20 @@ import type { Metadata } from "next";
 import { connection } from "next/server";
 import { ChatWorkspace } from "@/components/chat/chat-workspace";
 import { Skeleton } from "@/components/ui/skeleton";
-import { listCustomers } from "@/lib/db/repo";
+import { redirect } from "next/navigation";
+import { getCustomer } from "@/lib/db/repo";
+import { requirePageUser } from "@/lib/auth/session";
 import { geminiModel, llmConfigured } from "@/lib/llm/gemini";
 
 export const metadata: Metadata = { title: "Support Chat" };
 
 async function ChatLoader() {
   await connection();
-  const customers = listCustomers().filter((c) => c.scenario);
+  const user = await requirePageUser("customer");
+  const me = user.customerId ? getCustomer(user.customerId) : undefined;
+  if (!me) redirect("/login");
+  // a customer only ever sees and chats as themselves
+  const customers = [me];
   const model = geminiModel().replace(/^gemini-/, "Gemini ").replace(/-/g, " ").replace(/\b(\w)/g, (c) => c.toUpperCase());
   return <ChatWorkspace customers={customers} llmReady={llmConfigured()} model={model} />;
 }

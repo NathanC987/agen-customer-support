@@ -12,7 +12,7 @@ export class LlmUnavailableError extends Error {
 }
 
 let client: GoogleGenAI | null = null;
-function ai(): GoogleGenAI {
+export function ai(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) throw new LlmUnavailableError("GEMINI_API_KEY is not set", "no_key");
   client ??= new GoogleGenAI({ apiKey });

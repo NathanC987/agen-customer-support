@@ -172,7 +172,11 @@ export interface MessageMeta {
   actions?: { action: string; ref?: string; summary: string }[];
   runId?: string;
   error?: boolean;
-  kind?: "status_update" | "csat";
+  kind?: "status_update" | "csat" | "confirmation";
+  /** A quote the customer must confirm before money moves. */
+  pendingAction?: { id: string; summary: string; amount: number; type: string; lines?: { sku: string; name: string; qty: number; price: number }[] };
+  /** This turn was flagged as a possible prompt-injection attempt. */
+  guarded?: boolean;
 }
 
 export interface Message {
@@ -242,7 +246,8 @@ export type AgentName =
   | "ticket"
   | "tracking"
   | "sla"
-  | "response";
+  | "response"
+  | "guardrail";
 
 export interface TraceStep {
   id: string;

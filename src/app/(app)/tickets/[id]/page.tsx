@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
+import { requirePageUser } from "@/lib/auth/session";
 import { ArrowLeft, Bot, ChevronDown, CircleDot, Clock, Headset, MessageSquare, Sparkles, User } from "lucide-react";
 import { PageHeader } from "@/components/shell/page-header";
 import { PersonAvatar, Pill, PriorityBadge, SentimentBadge, TicketStatusBadge, TierBadge } from "@/components/badges";
@@ -24,6 +25,7 @@ const fmt = (iso: string) => new Date(iso).toLocaleString("en-US", { month: "sho
 
 async function TicketDetail({ params }: { params: Promise<{ id: string }> }) {
   await connection();
+  await requirePageUser("admin");
   const { id } = await params;
   const ticket = getTicket(Number(id));
   if (!ticket) notFound();

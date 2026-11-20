@@ -2,7 +2,8 @@ import { Suspense } from "react";
 import Link from "next/link";
 import type { Metadata } from "next";
 import { connection } from "next/server";
-import { Activity, AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Inbox, Smile, Timer, TrendingUp, Zap } from "lucide-react";
+import { requirePageUser } from "@/lib/auth/session";
+import { Activity, AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Inbox, ShieldAlert, Smile, Timer, TrendingUp, Zap } from "lucide-react";
 import { IntentChart, VolumeChart } from "@/components/dashboard/charts";
 import { PageHeader } from "@/components/shell/page-header";
 import { PriorityBadge } from "@/components/badges";
@@ -13,7 +14,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { getDashboardData } from "@/lib/agents/insights";
 import { sweepSla } from "@/lib/agents/tracking";
 import { TEAM_LABEL } from "@/lib/team";
-import { SENTIMENT_EMOJI, formatDuration, humanize } from "@/lib/ui-tokens";
+import { SENTIMENT_EMOJI, formatDuration, humanize, timeAgo } from "@/lib/ui-tokens";
+import { all } from "@/lib/db";
 import type { Sentiment, Team } from "@/lib/types";
 
 export const metadata: Metadata = { title: "Supervisor Dashboard" };
@@ -29,6 +31,10 @@ const SENTIMENT_BAR: Record<Sentiment, string> = {
 
 async function DashboardContent() {
   await connection();
+  await requirePageUser("admin");
+  const security = all<{ id: string; type: string; severity: string; detail: string; created_at: string; customer_name: string | null }>(
+    "SELECT e.*, c.name AS customer_name FROM security_events e LEFT JOIN customers c ON c.id = e.customer_id ORDER BY e.created_at DESC LIMIT 8",
+  );
   sweepSla();
   const d = getDashboardData();
   const k = d.kpis;
@@ -170,6 +176,34 @@ async function DashboardContent() {
                   ))}
                 </div>
               </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="lg:col-span-3">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <ShieldAlert className="size-4 text-destructive" /> Security events
+            </CardTitle>
+            <CardDescription>Blocked prompt-injection attempts, impersonation attempts and failed logins (latest 8)</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {security.length === 0 ? (
+              <p className="py-4 text-center text-sm text-muted-foreground">No security events recorded.</p>
+            ) : (
+              <ul className="divide-y rounded-lg border">
+                {security.map((e) => (
+                  <li key={e.id} className="flex items-center gap-3 px-3 py-2 text-xs">
+                    <span className={e.severity === "high" ? "font-semibold text-destructive" : e.severity === "medium" ? "font-semibold text-warning" : "text-muted-foreground"}>
+                      {e.severity}
+                    </span>
+                    <span className="w-44 shrink-0 font-medium">{humanize(e.type)}</span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">{e.detail}</span>
+                    <span className="hidden shrink-0 text-muted-foreground sm:inline">{e.customer_name ?? "—"}</span>
+                    <span className="shrink-0 text-muted-foreground">{timeAgo(e.created_at)}</span>
+                  </li>
+                ))}
+              </ul>
             )}
           </CardContent>
         </Card>

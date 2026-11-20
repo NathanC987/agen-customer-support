@@ -14,6 +14,7 @@ import {
   Wrench,
   Zap,
   type LucideIcon,
+  ShieldCheck,
 } from "lucide-react";
 import type { AgentName, ConversationStatus, Priority, Sentiment, TicketStatus } from "@/lib/types";
 
@@ -61,6 +62,7 @@ export const AGENTS: Record<AgentName, { label: string; icon: LucideIcon; color:
   tracking: { label: "Tracking Agent", icon: Wrench, color: "text-muted-foreground bg-muted" },
   sla: { label: "SLA Monitor", icon: Clock, color: "text-warning bg-warning/10" },
   response: { label: "Response", icon: MessageSquareReply, color: "text-primary bg-primary/10" },
+  guardrail: { label: "Security Guardrail", icon: ShieldCheck, color: "text-destructive bg-destructive/10" },
 };
 
 export const BotIcon = Bot;

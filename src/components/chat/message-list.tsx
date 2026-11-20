@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowUpRight, BadgeCheck, Bell, Headset, Sparkles, Ticket as TicketIcon, Zap } from "lucide-react";
+import { useState } from "react";
+import { ArrowUpRight, BadgeCheck, Bell, CheckCircle2, Headset, Loader2, ShieldAlert, ShoppingCart, Sparkles, Ticket as TicketIcon, XCircle, Zap } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { PersonAvatar, PriorityBadge, TicketStatusBadge } from "@/components/badges";
 import { cn } from "@/lib/utils";
 import { AGENTS } from "@/lib/ui-tokens";
@@ -58,7 +60,74 @@ function ActionChips({ actions }: { actions: NonNullable<Message["meta"]["action
   );
 }
 
-export function MessageBubble({ message, ticket, customerName }: { message: Message; ticket: Ticket | null; customerName: string }) {
+type Pending = NonNullable<Message["meta"]["pendingAction"]>;
+
+/** Explicit consent for spending: nothing is charged until the customer presses Confirm (or replies "yes"). */
+function ConfirmCard({ pending, status, onDecide }: { pending: Pending; status?: string; onDecide?: (id: string, d: "confirm" | "cancel") => Promise<void> }) {
+  const [busy, setBusy] = useState<"confirm" | "cancel" | null>(null);
+  const open = !status || status === "pending";
+  const decide = async (d: "confirm" | "cancel") => {
+    if (!onDecide || busy) return;
+    setBusy(d);
+    try {
+      await onDecide(pending.id, d);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="mt-2 w-full max-w-sm rounded-xl border bg-card p-3 text-sm shadow-sm">
+      <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <ShoppingCart className="size-3.5" /> {pending.type === "place_order" ? "Order quote" : "Plan change quote"}
+        <span className="ml-auto font-mono text-[10.5px]">{pending.id}</span>
+      </div>
+      {pending.lines?.length ? (
+        <ul className="mb-2 space-y-0.5 text-xs">
+          {pending.lines.map((l) => (
+            <li key={l.sku} className="flex justify-between gap-3">
+              <span className="truncate">{l.qty}× {l.name}</span>
+              <span className="tabular-nums">${(l.qty * l.price).toFixed(2)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mb-2 text-xs">{pending.summary}</p>
+      )}
+      <div className="mb-2.5 flex justify-between border-t pt-2 text-xs font-semibold">
+        <span>{pending.amount < 0 ? "Credit" : "Total"}</span>
+        <span className="tabular-nums">${Math.abs(pending.amount).toFixed(2)}</span>
+      </div>
+      {open ? (
+        <div className="flex gap-2">
+          <Button size="sm" className="flex-1" onClick={() => decide("confirm")} disabled={!!busy}>
+            {busy === "confirm" ? <Loader2 className="animate-spin" /> : <CheckCircle2 />} Confirm
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => decide("cancel")} disabled={!!busy}>
+            {busy === "cancel" ? <Loader2 className="animate-spin" /> : <XCircle />} Cancel
+          </Button>
+        </div>
+      ) : (
+        <p className={cn("text-xs font-medium", status === "confirmed" ? "text-success" : "text-muted-foreground")}>
+          {status === "confirmed" ? "✓ Confirmed" : status === "cancelled" ? "Cancelled — nothing charged" : status === "superseded" ? "Replaced by a newer quote" : `Quote ${status}`}
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function MessageBubble({
+  message,
+  ticket,
+  customerName,
+  pendingStatus,
+  onDecide,
+}: {
+  message: Message;
+  ticket: Ticket | null;
+  customerName: string;
+  pendingStatus?: string;
+  onDecide?: (id: string, d: "confirm" | "cancel") => Promise<void>;
+}) {
   if (message.role === "system") {
     return (
       <div className="flex justify-center">
@@ -88,6 +157,11 @@ export function MessageBubble({ message, ticket, customerName }: { message: Mess
         <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <span className="font-medium text-foreground/80">{isCustomer ? customerName : isHuman ? "Support specialist" : "Nova · AI agent"}</span>
           {isHuman && <BadgeCheck className="size-3 text-chart-2" />}
+          {message.meta.guarded && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
+              <ShieldAlert className="size-3" /> Guardrail
+            </span>
+          )}
           <span>{time(message.created_at)}</span>
         </div>
         <div
@@ -104,6 +178,7 @@ export function MessageBubble({ message, ticket, customerName }: { message: Mess
           <RichText text={message.content} />
         </div>
         {!isCustomer && message.meta.actions && message.meta.actions.length > 0 && <ActionChips actions={message.meta.actions} />}
+        {!isCustomer && message.meta.pendingAction && <ConfirmCard pending={message.meta.pendingAction} status={pendingStatus} onDecide={onDecide} />}
         {!isCustomer && ticket && message.meta.ticketId === ticket.id && message.role === "assistant" && <TicketCard ticket={ticket} />}
       </div>
     </div>

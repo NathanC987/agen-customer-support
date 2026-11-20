@@ -1,16 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { ArrowUp, BookPlus, Cpu, Loader2, MessageSquarePlus, PanelLeft, PanelRight, Ticket as TicketIcon, User } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUp, Cpu, Loader2, MessageSquarePlus, PanelLeft, PanelRight, Ticket as TicketIcon, User } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { generateKbArticle } from "@/app/actions";
 import { ConversationStatusBadge, PersonAvatar, Pill, PriorityBadge, SentimentBadge, TicketStatusBadge, TierBadge } from "@/components/badges";
 import { TracePanel } from "@/components/trace/trace-panel";
 import { TicketSummary } from "@/components/tickets/ticket-summary";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -39,9 +36,7 @@ export function ChatWorkspace({ customers, llmReady, model }: { customers: Custo
   const [tab, setTab] = useState("trace");
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
-  const [drafting, startDraft] = useTransition();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const router = useRouter();
   const customer = customers.find((c) => c.id === customerId);
 
   const loadCustomer = useCallback(async (id: string) => {
@@ -117,7 +112,8 @@ export function ChatWorkspace({ customers, llmReady, model }: { customers: Custo
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ customerId: asCustomer, conversationId: startConversation, message: trimmed }),
+          // identity comes from the session cookie; clientMessageId makes retries/double-submits idempotent
+          body: JSON.stringify({ conversationId: startConversation, message: trimmed, clientMessageId: crypto.randomUUID() }),
         });
         if (!res.ok || !res.body) throw new Error((await res.json().catch(() => null))?.error ?? "Request failed");
         const reader = res.body.getReader();
@@ -199,38 +195,35 @@ export function ChatWorkspace({ customers, llmReady, model }: { customers: Custo
     return map;
   }, [messages]);
 
-  const draftArticle = () =>
-    startDraft(async () => {
-      if (!conversationId) return;
-      const res = await generateKbArticle(conversationId);
-      if (res.ok) toast.success("Draft FAQ article created", { action: { label: "Review", onClick: () => router.push("/knowledge") } });
-      else toast.error(res.error);
-    });
+  /** Customer consent for a quote — executed server-side exactly once. */
+  const decide = useCallback(
+    async (id: string, decision: "confirm" | "cancel") => {
+      const res = await fetch(`/api/pending/${id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision }) });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) toast.success(decision === "confirm" ? (data.result?.summary ?? "Confirmed") : "Cancelled — nothing was charged");
+      else toast.error(data.error ?? "Could not complete that");
+      if (conversationId) await loadConversation(conversationId);
+      await loadCustomer(customerId);
+    },
+    [conversationId, customerId, loadConversation, loadCustomer],
+  );
+  const pendingStatus = useMemo(() => new Map((convo?.pending ?? []).map((p) => [p.id, p.status])), [convo?.pending]);
 
   /* ---------------- panels ---------------- */
 
   const leftPanel = (
     <div className="flex h-full flex-col">
       <div className="space-y-2 border-b p-3">
-        <label className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">Chatting as</label>
-        <Select value={customerId} onValueChange={(v) => { selectCustomer(v); setLeftOpen(false); }}>
-          <SelectTrigger className="h-auto! w-full py-1.5">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {customers.map((c) => (
-              <SelectItem key={c.id} value={c.id} className="py-1.5">
-                <span className="flex items-center gap-2">
-                  <PersonAvatar name={c.name} className="size-6 text-[9px]" />
-                  <span className="flex flex-col items-start">
-                    <span className="text-sm leading-tight">{c.name}</span>
-                    <span className="text-[11px] leading-tight text-muted-foreground">{c.scenario}</span>
-                  </span>
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <label className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">Signed in as</label>
+        {customer && (
+          <div className="flex items-center gap-2 rounded-lg border bg-card px-2.5 py-2">
+            <PersonAvatar name={customer.name} className="size-7 text-[10px]" />
+            <span className="min-w-0">
+              <span className="block truncate text-sm leading-tight font-medium">{customer.name}</span>
+              <span className="block truncate text-[11px] leading-tight text-muted-foreground">{customer.email}</span>
+            </span>
+          </div>
+        )}
         <Button variant="outline" className="w-full justify-start" onClick={() => { resetChat(); setLeftOpen(false); }}>
           <MessageSquarePlus /> New conversation
         </Button>
@@ -344,11 +337,6 @@ export function ChatWorkspace({ customers, llmReady, model }: { customers: Custo
           </TooltipTrigger>
           <TooltipContent>{llmReady ? "Agents powered by Google Gemini" : "Add GEMINI_API_KEY to .env.local to enable LLM reasoning"}</TooltipContent>
         </Tooltip>
-        {status === "resolved" && (
-          <Button variant="outline" size="sm" onClick={draftArticle} disabled={drafting} className="hidden md:inline-flex">
-            {drafting ? <Loader2 className="animate-spin" /> : <BookPlus />} Draft KB article
-          </Button>
-        )}
         <Button variant="ghost" size="icon-sm" className="xl:hidden" onClick={() => setRightOpen(true)} aria-label="Agent trace">
           <PanelRight />
         </Button>
@@ -363,7 +351,16 @@ export function ChatWorkspace({ customers, llmReady, model }: { customers: Custo
               {messages.length === 0 ? (
                 <EmptyState customerId={customerId} onPick={runScenario} onAsk={(q) => send(q)} disabled={busy} />
               ) : (
-                messages.map((m) => <MessageBubble key={m.id} message={m} ticket={ticket} customerName={customer?.name ?? "Customer"} />)
+                messages.map((m) => (
+                  <MessageBubble
+                    key={m.id}
+                    message={m}
+                    ticket={ticket}
+                    customerName={customer?.name ?? "Customer"}
+                    pendingStatus={m.meta.pendingAction ? pendingStatus.get(m.meta.pendingAction.id) : undefined}
+                    onDecide={decide}
+                  />
+                ))
               )}
               {busy && <TypingIndicator step={currentStep} />}
               {!busy && status === "resolved" && conversationId && (
@@ -455,7 +452,7 @@ function EmptyState({
         </span>
         <h2 className="text-lg font-semibold">How can we help today?</h2>
         <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-          Chat freely as the selected customer — Nova knows their orders, payments and plan, and can answer questions or get things done. Or run a scenario from the problem statement below.
+          Chat freely — Nova knows your orders, payments and plan, and can answer questions or get things done. Anything that costs money is shown as a quote for you to confirm first.
         </p>
       </div>
       <div className="mb-6 flex flex-wrap justify-center gap-2">
@@ -471,9 +468,11 @@ function EmptyState({
           </button>
         ))}
       </div>
-      <p className="mb-2.5 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">Problem-statement scenarios</p>
+      {SCENARIOS.some((s) => s.customerId === customerId) && (
+        <p className="mb-2.5 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">Your problem-statement scenario</p>
+      )}
       <div className="grid gap-2.5 sm:grid-cols-2">
-        {SCENARIOS.map((s) => {
+        {SCENARIOS.filter((s) => s.customerId === customerId).map((s) => {
           const suggested = s.customerId === customerId;
           return (
             <button

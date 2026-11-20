@@ -8,7 +8,10 @@ import {
   saveRun,
   updateConversation,
 } from "@/lib/db/repo";
-import { TOOLS, isActionResult, type ToolContext } from "@/lib/tools";
+import { TOOLS, isActionResult, isQuoteTool, type ToolContext } from "@/lib/tools";
+import { logSecurityEvent } from "@/lib/auth/session";
+import { all } from "@/lib/db";
+import { detectLeak, scanForInjection } from "@/lib/security/guard";
 import { TEAM_LABEL } from "@/lib/team";
 import { getCustomerContext } from "./context";
 import { postEscalationCheck, preEscalationCheck, type EscalationDecision } from "./escalation";
@@ -65,8 +68,9 @@ const fallbackReason = (e: unknown) =>
  * Master Orchestrator: coordinates the specialised agents for one customer turn.
  * Intent → Memory → Context → Escalation pre-check → Knowledge → Troubleshoot/Act → Escalation post-check → Ticket → Track.
  */
-export async function handleTurn(input: { customerId: string; conversationId?: string | null; text: string }, emit: Emit) {
+export async function handleTurn(input: { customerId: string; conversationId?: string | null; text: string; clientMessageId?: string | null }, emit: Emit) {
   const t0 = Date.now();
+  const turnStartedAt = new Date(t0).toISOString();
   const counter = { llmCalls: 0 };
   const trace = tracer(emit);
   let llmAvailable = llmConfigured();
@@ -76,7 +80,7 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
   if (!conversation || conversation.customer_id !== input.customerId) conversation = createConversation(input.customerId);
   const conversationId = conversation.id;
   emit({ type: "conversation", conversation });
-  const userMessage = addMessage(conversationId, "customer", input.text);
+  const userMessage = addMessage(conversationId, "customer", input.text, {}, input.clientMessageId ?? null);
   emit({ type: "user_message", message: userMessage });
 
   // ---- 6. Conversation Memory Agent ----
@@ -90,6 +94,15 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
       ? `${history.length - 1} prior messages · tracking "${prevState.intent?.replace(/_/g, " ")}"${Object.keys(prevState.entities).length ? ` · knows ${Object.entries(prevState.entities).map(([k, v]) => `${k}=${v}`).join(", ")}` : ""}`
       : "New conversation",
     data: { previous: prevState, openTicket: openTicket ? { id: openTicket.id, status: openTicket.status } : null },
+  });
+
+  // ---- Security guardrail (layer 1: deterministic scan) ----
+  const guardStep = trace.start("guardrail", "Prompt-injection scan");
+  const scan = scanForInjection(input.text);
+  trace.finish(guardStep, {
+    summary: scan.flagged ? `Suspicious: ${scan.matches.map((m) => m.rule.replace(/_/g, " ")).join(", ")}` : scan.score ? `Low risk (score ${scan.score})` : "No manipulation patterns",
+    data: scan,
+    status: scan.flagged ? "error" : "done",
   });
 
   // ---- 1. Intent Detection Agent ----
@@ -107,6 +120,27 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
     intent = heuristicIntent(input.text, prevState);
     trace.finish(intentStep, { summary: `${intent.intent.replace(/_/g, " ")} (heuristic fallback — ${fallbackReason(e)})`, data: intent, status: "error" });
   }
+  // ---- Security guardrail (layer 2: LLM classification) → guarded mode ----
+  const guarded = scan.flagged || intent.injection_attempt;
+  if (guarded) {
+    logSecurityEvent({
+      type: "prompt_injection",
+      customer_id: input.customerId,
+      conversation_id: conversationId,
+      severity: scan.flagged && intent.injection_attempt ? "high" : "medium",
+      detail: { message: input.text.slice(0, 500), rules: scan.matches.map((m) => m.rule), llm: intent.injection_attempt ? (intent.injection_reason ?? true) : false },
+    });
+    const g = trace.start("guardrail", "Guarded mode");
+    trace.finish(g, {
+      summary: `Account-changing tools disabled for this turn (${[scan.flagged && "pattern scan", intent.injection_attempt && "LLM classifier"].filter(Boolean).join(" + ")})`,
+      data: { scan: scan.matches, llmReason: intent.injection_reason ?? null },
+      status: "error",
+    });
+  }
+  const priorAttempts = guarded
+    ? all<{ n: number }>("SELECT COUNT(*) AS n FROM security_events WHERE conversation_id = ? AND type = 'prompt_injection'", conversationId)[0].n
+    : 0;
+
   const state = mergeIntent(prevState, intent);
   if (state.intent !== intent.intent) intent = { ...intent, intent: state.intent!, category: state.category! };
 
@@ -121,6 +155,11 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
   // ---- 7a. Escalation Decision Agent (pre-check) ----
   const preStep = trace.start("escalation", "Escalation pre-check");
   const pre = preEscalationCheck(intent, ctx, state);
+  if (priorAttempts >= 3 && !openTicket) {
+    pre.decision = "escalate";
+    pre.team = "trust_safety";
+    pre.reasons.unshift(`Repeated manipulation attempts in this conversation (${priorAttempts}) — security review`);
+  }
   trace.finish(preStep, {
     summary: pre.decision === "escalate" ? `Must escalate → ${TEAM_LABEL[pre.team]}: ${pre.reasons[0]}` : "Safe to attempt autonomous resolution",
     data: pre,
@@ -130,16 +169,28 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
   // ---- 3. Knowledge Base Agent ----
   let knowledge: KnowledgeResult | null = null;
   const kbStep = trace.start("knowledge", "Searching knowledge base");
-  knowledge = retrieveKnowledge(`${input.text} ${intent.summary}`, intent.intent);
+  const kb = await retrieveKnowledge(`${input.text} ${intent.summary}`, intent.intent);
+  knowledge = kb;
+  const engineLabel = kb.engine === "vector" ? "Qdrant vector search" : "keyword fallback";
   trace.finish(kbStep, {
-    summary: knowledge.workflow
-      ? `Selected workflow "${knowledge.workflow.name}" (${Math.round(knowledge.workflow.reliability * 100)}% reliable) · ${knowledge.hits.length} articles`
-      : `${knowledge.hits.length} relevant articles · no workflow match`,
-    data: knowledge,
+    summary: kb.workflow
+      ? `${engineLabel} · workflow "${kb.workflow.name}" (${Math.round(kb.workflow.reliability * 100)}% reliable) · ${kb.hits.length} articles`
+      : `${engineLabel} · ${kb.hits.length} relevant articles · no workflow match`,
+    data: kb,
   });
 
   // ---- 4/5. Troubleshooting + Action Execution Agents ----
-  const toolCtx: ToolContext = { customerId: input.customerId, conversationId, intent: intent.intent, escalation: null, outcome: null };
+  const toolCtx: ToolContext = {
+    customerId: input.customerId,
+    conversationId,
+    message: input.text,
+    turnStartedAt,
+    guarded,
+    pending: null,
+    intent: intent.intent,
+    escalation: null,
+    outcome: null,
+  };
   let calls: ToolCallRecord[] = [];
   let replyText = "";
   const pending = new Map<string, TraceStep[]>();
@@ -156,6 +207,7 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
         mode,
         escalationReasons: pre.reasons,
         openTicket,
+        guarded,
         counter,
         onCall: (name, args) => {
           const tool = TOOLS[name];
@@ -169,8 +221,15 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
           if (!step) return;
           const r = rec.result as Record<string, unknown> | null;
           const failed = r && typeof r === "object" && ("error" in r || r.success === false);
+          const quote = isQuoteTool(rec.name) && r && "requires_confirmation" in r;
           trace.finish(step, {
-            summary: isActionResult(rec.result) ? rec.result.summary : failed ? String(r!.error ?? r!.summary) : summarizeRead(rec),
+            summary: isActionResult(rec.result)
+              ? rec.result.summary
+              : failed
+                ? String(r!.error ?? r!.summary)
+                : quote
+                  ? `Quote ${String(r!.pending_action_id)} created — waiting for the customer to confirm (nothing charged)`
+                  : summarizeRead(rec),
             data: { tool: rec.name, args: rec.args, result: rec.result },
             status: failed ? "error" : "done",
           });
@@ -181,7 +240,8 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
       trace.finish(planStep, { summary: `${calls.length} tool calls · ${counter.llmCalls} LLM calls so far` });
     } catch (e) {
       llmAvailable = false;
-      trace.finish(planStep, { summary: `Reasoning unavailable (${fallbackReason(e)}) — failing safe to a human`, status: "error" });
+      console.warn("[orchestrator] resolver failed:", e instanceof Error ? e.message : e);
+      trace.finish(planStep, { summary: `Reasoning unavailable (${fallbackReason(e)}) — failing safe to a human`, status: "error", data: { error: e instanceof Error ? e.message.slice(0, 300) : String(e) } });
       for (const steps of pending.values()) for (const s of steps) trace.finish(s, { status: "error", summary: "interrupted" });
     }
   } else {
@@ -258,8 +318,17 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
     replyText += `\n\nYour ticket number is **#${ticket.id}** — a ${TEAM_LABEL[ticket.team]} specialist will respond within ${responseTargetMinutes(ctx.customer.tier, ticket.priority)} minutes.`;
   }
 
+  // ---- Security guardrail (layer 3: output leak check) ----
+  const leak = detectLeak(replyText);
+  if (leak) {
+    logSecurityEvent({ type: "prompt_leak_blocked", customer_id: input.customerId, conversation_id: conversationId, severity: "high", detail: { marker: leak } });
+    const g = trace.start("guardrail", "Output leak check");
+    trace.finish(g, { summary: "Reply contained internal instructions — replaced with a safe response", status: "error", data: { marker: leak } });
+    replyText = "Sorry — I can't share details about how I'm configured. I'm happy to help with your orders, payments, plan or account, though. What do you need?";
+  }
+
   // ---- 9. lifecycle update (Resolution Tracking) ----
-  const outcomeStatus = toolCtx.outcome?.status;
+  const outcomeStatus = toolCtx.pending ? "awaiting_customer" : toolCtx.outcome?.status;
   const status: ConversationStatus =
     ticket || openTicket
       ? "escalated"
@@ -285,7 +354,12 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
   });
 
   const respStep = trace.start("response", "Responding to customer");
-  const assistant = addMessage(conversationId, "assistant", replyText, { actions, ticketId: ticket?.id ?? openTicket?.id });
+  const assistant = addMessage(conversationId, "assistant", replyText, {
+    actions,
+    ticketId: ticket?.id ?? openTicket?.id,
+    ...(toolCtx.pending && !guarded ? { pendingAction: toolCtx.pending, kind: "confirmation" as const } : {}),
+    ...(guarded ? { guarded: true } : {}),
+  });
   trace.finish(respStep, { summary:
       status === "escalated"
         ? "Customer informed of escalation"

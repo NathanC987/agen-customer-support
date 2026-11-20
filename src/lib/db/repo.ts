@@ -1,4 +1,4 @@
-import { all, get, json, newId, nowIso, run } from ".";
+import { all, get, json, newId, nowIso, run, uniqueId } from ".";
 import type {
   Account,
   AgentRun,
@@ -100,7 +100,7 @@ export function createServiceRecord(
   rec: Omit<ServiceRecord, "id" | "created_at"> & { conversation_id?: string | null },
   prefix: string,
 ): ServiceRecord {
-  const id = `${prefix}-${Math.floor(10000 + Math.random() * 89999)}`;
+  const id = uniqueId(`${prefix}-`, "service_records");
   const created_at = nowIso();
   run(
     "INSERT INTO service_records (id, type, customer_id, order_id, conversation_id, status, details, created_at) VALUES (?,?,?,?,?,?,?,?)",
@@ -178,21 +178,25 @@ export function updateConversation(id: string, patch: Partial<Omit<Conversation,
   run(`UPDATE conversations SET ${sets} WHERE id = ?`, ...values, id);
 }
 
-export function addMessage(conversationId: string, role: MessageRole, content: string, meta: MessageMeta = {}): Message {
+/** clientId (optional) is the caller's idempotency key — the unique index rejects a replayed message. */
+export function addMessage(conversationId: string, role: MessageRole, content: string, meta: MessageMeta = {}, clientId: string | null = null): Message {
   const id = newId("msg");
   const created_at = nowIso();
   run(
-    "INSERT INTO messages (id, conversation_id, role, content, meta, created_at) VALUES (?,?,?,?,?,?)",
+    "INSERT INTO messages (id, conversation_id, role, content, meta, created_at, client_id) VALUES (?,?,?,?,?,?,?)",
     id,
     conversationId,
     role,
     content,
     JSON.stringify(meta),
     created_at,
+    clientId,
   );
   run("UPDATE conversations SET updated_at = ? WHERE id = ?", created_at, conversationId);
   return { id, conversation_id: conversationId, role, content, meta, created_at };
 }
+
+export const messageExists = (clientId: string) => Boolean(get("SELECT 1 FROM messages WHERE client_id = ?", clientId));
 
 export const listMessages = (conversationId: string) =>
   all<Row>("SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at, rowid", conversationId).map(toMessage);

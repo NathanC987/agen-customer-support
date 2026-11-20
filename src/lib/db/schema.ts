@@ -175,4 +175,65 @@ CREATE TABLE IF NOT EXISTS service_records (
   details TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  name TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('customer', 'admin')),
+  customer_id TEXT REFERENCES customers(id),
+  created_at TEXT NOT NULL,
+  last_login_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS products (
+  sku TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  price REAL NOT NULL CHECK (price >= 0),
+  category TEXT NOT NULL,
+  stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
+  description TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS inventory_events (
+  id TEXT PRIMARY KEY,
+  sku TEXT NOT NULL,
+  delta INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  ref TEXT,
+  actor TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_inventory_events ON inventory_events(created_at);
+
+CREATE TABLE IF NOT EXISTS pending_actions (
+  id TEXT PRIMARY KEY,
+  customer_id TEXT NOT NULL REFERENCES customers(id),
+  conversation_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  amount REAL NOT NULL,
+  summary TEXT NOT NULL,
+  status TEXT NOT NULL,
+  result TEXT,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pending_customer ON pending_actions(customer_id, status);
+
+CREATE TABLE IF NOT EXISTS security_events (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  customer_id TEXT,
+  conversation_id TEXT,
+  severity TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_security_events ON security_events(created_at);
 `;

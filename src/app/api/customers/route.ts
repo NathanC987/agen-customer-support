@@ -1,7 +1,11 @@
 import { connection } from "next/server";
 import { listCustomers } from "@/lib/db/repo";
+import { requireApiUser } from "@/lib/auth/session";
 
-export async function GET() {
+/** Admin only: the customer directory. */
+export async function GET(req: Request) {
   await connection();
-  return Response.json(listCustomers().filter((c) => c.scenario));
+  const auth = await requireApiUser(req, "admin");
+  if (auth.error) return auth.error;
+  return Response.json(listCustomers());
 }

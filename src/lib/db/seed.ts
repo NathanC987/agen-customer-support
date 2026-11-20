@@ -1,4 +1,6 @@
-import { db, newId, run, tx } from ".";
+import { all, db, newId, run, tx } from ".";
+import { hashPassword } from "@/lib/auth/password";
+import { PRODUCTS_SEED } from "./products-seed";
 import { KB_SEED } from "./kb-seed";
 import { emptyIssueState } from "./repo";
 import { slaDueAt } from "@/lib/agents/sla";
@@ -320,6 +322,29 @@ function seedHistory() {
   }
 }
 
+function seedUsers() {
+  // admin + one login per scenario customer (passwords documented on the login page)
+  run(
+    "INSERT INTO users (id, email, name, password_hash, role, customer_id, created_at) VALUES (?,?,?,?,?,?,?)",
+    "usr_admin", "admin@nimbus.example", "Support Lead", hashPassword("Admin@1234"), "admin", null, ago(400 * DAY),
+  );
+  const customers = all<{ id: string; email: string; name: string; created_at: string }>("SELECT id, email, name, created_at FROM customers WHERE scenario IS NOT NULL");
+  for (const c of customers)
+    run(
+      "INSERT INTO users (id, email, name, password_hash, role, customer_id, created_at) VALUES (?,?,?,?,?,?,?)",
+      `usr_${c.id.slice(4)}`, c.email, c.name, hashPassword("Demo@1234"), "customer", c.id, c.created_at,
+    );
+}
+
+function seedProducts() {
+  const now = iso(NOW);
+  for (const p of PRODUCTS_SEED)
+    run(
+      "INSERT INTO products (sku, name, price, category, stock, description, active, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+      p.sku, p.name, p.price, p.category, p.stock, p.description, 1, ago(90 * DAY), now,
+    );
+}
+
 function seedKb() {
   for (const a of KB_SEED) {
     run(
@@ -331,12 +356,14 @@ function seedKb() {
 
 export function seed() {
   const d = db();
-  const tables = ["csat", "ticket_events", "tickets", "agent_runs", "messages", "conversations", "service_records", "kb_articles", "subscriptions", "transactions", "shipments", "orders", "accounts", "customers"];
+  const tables = ["security_events", "pending_actions", "inventory_events", "products", "users", "csat", "ticket_events", "tickets", "agent_runs", "messages", "conversations", "service_records", "kb_articles", "subscriptions", "transactions", "shipments", "orders", "accounts", "customers"];
   tx(() => {
     for (const t of tables) d.exec(`DELETE FROM ${t}`);
     d.exec("DELETE FROM sqlite_sequence WHERE name = 'tickets'");
     d.exec("INSERT INTO sqlite_sequence (name, seq) VALUES ('tickets', 1000)");
     seedScenarioCustomers();
+    seedUsers();
+    seedProducts();
     seedKb();
     seedHistory();
   });

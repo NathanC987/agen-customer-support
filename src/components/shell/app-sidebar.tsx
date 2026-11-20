@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useTransition } from "react";
 import { useTheme } from "next-themes";
-import { BookOpen, LayoutDashboard, MessagesSquare, Monitor, Moon, MoreHorizontal, RotateCcw, Sparkles, Sun, Ticket } from "lucide-react";
+import { BookOpen, Boxes, LayoutDashboard, LogOut, MessagesSquare, Monitor, Moon, MoreHorizontal, RotateCcw, Sparkles, Sun, Ticket } from "lucide-react";
 import { toast } from "sonner";
 import { resetDemo } from "@/app/actions";
 import {
@@ -31,14 +31,28 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-const NAV = [
-  { href: "/chat", label: "Support Chat", icon: MessagesSquare, hint: "Customer view + live agent trace" },
-  { href: "/tickets", label: "Tickets", icon: Ticket, hint: "Escalations for human agents" },
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, hint: "Supervisor metrics & insights" },
-  { href: "/knowledge", label: "Knowledge Base", icon: BookOpen, hint: "FAQs, policies & workflows" },
-];
+export interface SidebarUser {
+  name: string;
+  email: string;
+  role: "customer" | "admin";
+}
 
-export function AppSidebar() {
+const NAV = [
+  { href: "/chat", label: "Support Chat", icon: MessagesSquare, role: "customer" },
+  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, role: "admin" },
+  { href: "/tickets", label: "Tickets", icon: Ticket, role: "admin" },
+  { href: "/inventory", label: "Inventory", icon: Boxes, role: "admin" },
+  { href: "/knowledge", label: "Knowledge Base", icon: BookOpen, role: "admin" },
+] as const;
+
+async function signOut() {
+  await fetch("/api/auth/logout", { method: "POST" });
+  // full reload on purpose: drops every client-side cache of the signed-out user's data
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+  window.location.assign("/login");
+}
+
+export function AppSidebar({ user }: { user: SidebarUser | null }) {
   const router = useRouter();
   const { theme, setTheme } = useTheme();
   const [resetting, startReset] = useTransition();
@@ -49,13 +63,13 @@ export function AppSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild className="hover:bg-transparent">
-              <Link href="/chat">
+              <Link href={user?.role === "admin" ? "/dashboard" : "/chat"}>
                 <span className="flex aspect-square size-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-sm">
                   <Sparkles className="size-4" />
                 </span>
                 <span className="grid flex-1 text-left leading-tight">
                   <span className="truncate font-semibold">Nimbus Support</span>
-                  <span className="truncate text-xs text-muted-foreground">Agentic CX platform</span>
+                  <span className="truncate text-xs text-muted-foreground">{user?.role === "admin" ? "Admin console" : "Customer support"}</span>
                 </span>
               </Link>
             </SidebarMenuButton>
@@ -65,10 +79,10 @@ export function AppSidebar() {
 
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>Workspace</SidebarGroupLabel>
+          <SidebarGroupLabel>{user?.role === "admin" ? "Admin" : "Workspace"}</SidebarGroupLabel>
           <SidebarGroupContent>
-            <Suspense fallback={<NavLinks pathname="" />}>
-              <ActiveNavLinks />
+            <Suspense fallback={<NavLinks pathname="" role={user?.role} />}>
+              <ActiveNavLinks role={user?.role} />
             </Suspense>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -79,9 +93,12 @@ export function AppSidebar() {
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <SidebarMenuButton tooltip="Settings">
+                <SidebarMenuButton tooltip="Account & settings" size="lg">
                   <MoreHorizontal />
-                  <span>Settings</span>
+                  <span className="grid min-w-0 flex-1 text-left leading-tight">
+                    <span className="truncate text-sm font-medium">{user?.name ?? "Settings"}</span>
+                    {user && <span className="truncate text-[11px] text-muted-foreground">{user.role === "admin" ? "Administrator" : user.email}</span>}
+                  </span>
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent side="top" align="start" className="w-56">
@@ -97,7 +114,8 @@ export function AppSidebar() {
                     <Monitor /> System
                   </DropdownMenuRadioItem>
                 </DropdownMenuRadioGroup>
-                <DropdownMenuSeparator />
+                {user?.role === "admin" && <DropdownMenuSeparator />}
+                {user?.role === "admin" && (
                 <DropdownMenuItem
                   disabled={resetting}
                   onSelect={() =>
@@ -112,6 +130,11 @@ export function AppSidebar() {
                 >
                   <RotateCcw /> Reset demo data
                 </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => void signOut()}>
+                  <LogOut /> Sign out
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </SidebarMenuItem>
@@ -122,14 +145,14 @@ export function AppSidebar() {
   );
 }
 
-function ActiveNavLinks() {
-  return <NavLinks pathname={usePathname()} />;
+function ActiveNavLinks({ role }: { role?: SidebarUser["role"] }) {
+  return <NavLinks pathname={usePathname()} role={role} />;
 }
 
-function NavLinks({ pathname }: { pathname: string }) {
+function NavLinks({ pathname, role }: { pathname: string; role?: SidebarUser["role"] }) {
   return (
     <SidebarMenu>
-      {NAV.map((item) => (
+      {NAV.filter((item) => item.role === role).map((item) => (
         <SidebarMenuItem key={item.href}>
           <SidebarMenuButton asChild isActive={pathname.startsWith(item.href)} tooltip={item.label}>
             <Link href={item.href}>

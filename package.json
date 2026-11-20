@@ -7,15 +7,18 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "db:seed": "tsx scripts/seed.ts",
-    "eval": "tsx scripts/eval.ts",
-    "typecheck": "tsc --noEmit"
+    "db:seed": "tsx --env-file-if-exists=.env.local scripts/seed.ts",
+    "eval": "tsx --env-file-if-exists=.env.local scripts/eval.ts",
+    "typecheck": "tsc --noEmit",
+    "rag:index": "tsx --env-file-if-exists=.env.local scripts/rag-index.ts",
+    "test:security": "tsx scripts/security-check.ts"
   },
   "dependencies": {
     "@google/genai": "^2.30.0",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.4.0",
     "date-fns": "^4.4.0",
+    "jose": "^6.1.0",
     "lucide-react": "^1.57.0",
     "next": "16.4.2",
     "next-themes": "^0.4.6",

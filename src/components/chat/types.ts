@@ -14,6 +14,7 @@ export interface ConversationDetail {
   runs: AgentRun[];
   ticket: Ticket | null;
   csat: { rating: number; comment: string | null } | null;
+  pending: { id: string; status: string }[];
 }
 
 export interface LiveRun {

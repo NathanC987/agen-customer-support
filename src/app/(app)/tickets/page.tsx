@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import type { Metadata } from "next";
 import { connection } from "next/server";
+import { requirePageUser } from "@/lib/auth/session";
 import { AlarmClock, CheckCircle2, Flame, Inbox } from "lucide-react";
 import { PageHeader } from "@/components/shell/page-header";
 import { StatCard } from "@/components/stat-card";
@@ -13,6 +14,7 @@ export const metadata: Metadata = { title: "Tickets" };
 
 async function TicketsContent() {
   await connection();
+  await requirePageUser("admin");
   sweepSla();
   const tickets = listTickets();
   const s = ticketStats(tickets);
