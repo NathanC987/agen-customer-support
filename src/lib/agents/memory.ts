@@ -10,13 +10,16 @@ export function loadMemory(conversationId: string) {
   return { conversation, history, state: conversation.issue_state };
 }
 
+const keepPreviousIntent = (state: IssueState, intent: IntentAnalysis) =>
+  intent.confidence < 0.75 || ["greeting", "general_inquiry", "human_request", "feedback"].includes(intent.intent);
+
 /** Folds a new intent analysis into the issue state without forgetting earlier facts. */
 export function mergeIntent(state: IssueState, intent: IntentAnalysis): IssueState {
   const entities = { ...state.entities };
   for (const [k, v] of Object.entries(intent.entities)) if (v) entities[k] = String(v);
   // a brand-new, confidently different issue replaces the intent but keeps the entities
-  const switching = state.intent && intent.intent !== state.intent && intent.confidence >= 0.75 && !["greeting", "general_inquiry", "human_request", "feedback"].includes(intent.intent);
-  const keepPrevious = state.intent && ["general_inquiry", "greeting"].includes(intent.intent);
+  const switching = state.intent && intent.intent !== state.intent && !keepPreviousIntent(state, intent);
+  const keepPrevious = state.intent && state.lifecycle === "awaiting_customer" && ["general_inquiry", "greeting"].includes(intent.intent);
   return {
     ...state,
     intent: keepPrevious ? state.intent : intent.intent,

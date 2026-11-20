@@ -16,6 +16,7 @@ const TEAM_BY_INTENT: Partial<Record<Intent, Team>> = {
   billing_question: "billing",
   subscription_issue: "engineering",
   plan_change: "billing",
+  place_order: "billing",
   order_status: "logistics",
   wrong_item: "logistics",
   damaged_item: "logistics",
@@ -45,7 +46,8 @@ export function preEscalationCheck(intent: IntentAnalysis, ctx: CustomerContext,
   if (intent.wants_human) reasons.push("Customer explicitly requested a human agent");
   const repeatContact = ctx.highlights.openTickets > 0 || state.turns >= 5;
   if (intent.sentiment === "angry" && repeatContact) reasons.push("Angry customer on a repeat/long-running contact — escalate faster");
-  if (intent.confidence < 0.5 && state.turns >= 3) reasons.push(`Intent still unclear after ${state.turns} turns (confidence ${Math.round(intent.confidence * 100)}%)`);
+  const informational = ["greeting", "general_inquiry", "product_question", "feedback"].includes(intent.intent);
+  if (!informational && intent.confidence < 0.5 && state.turns >= 3) reasons.push(`Intent still unclear after ${state.turns} turns (confidence ${Math.round(intent.confidence * 100)}%)`);
 
   return {
     decision: reasons.length ? "escalate" : "auto_resolve",

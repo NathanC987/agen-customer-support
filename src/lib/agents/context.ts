@@ -41,16 +41,20 @@ export function getCustomerContext(customerId: string) {
 
 export type CustomerContext = ReturnType<typeof getCustomerContext>;
 
-/** Compact projection for the LLM prompt — keeps token usage low on the free tier. */
+/** Projection for the LLM prompt: everything the assistant should "just know" about this customer. */
 export function contextForPrompt(ctx: CustomerContext) {
   return {
     name: ctx.customer.name,
+    email: ctx.customer.email,
+    location: ctx.customer.location,
     tier: ctx.customer.tier,
     customer_since: ctx.customer.created_at.slice(0, 10),
-    account: ctx.account && { status: ctx.account.status, failed_login_attempts: ctx.account.failed_login_attempts, two_factor: ctx.account.two_factor },
-    subscription: ctx.subscription && { plan: ctx.subscription.plan, status: ctx.subscription.status, sync_status: ctx.subscription.sync_status },
-    recent_orders: ctx.orders.slice(0, 4).map((o) => ({ id: o.id, status: o.status, total: o.total, date: o.created_at.slice(0, 10), items: o.items.map((i) => i.name) })),
-    previous_tickets: ctx.highlights.previousTickets,
+    account: ctx.account && { status: ctx.account.status, failed_login_attempts: ctx.account.failed_login_attempts, two_factor: Boolean(ctx.account.two_factor), lock_reason: ctx.account.lock_reason },
+    subscription: ctx.subscription && { plan: ctx.subscription.plan, status: ctx.subscription.status, sync_status: ctx.subscription.sync_status, renews_at: ctx.subscription.renews_at?.slice(0, 10) ?? null },
+    orders: ctx.orders.map((o) => ({ id: o.id, status: o.status, total: o.total, date: o.created_at.slice(0, 10), delivered: o.delivered_at?.slice(0, 10) ?? null, items: o.items.map((i) => `${i.qty}× ${i.name}`) })),
+    transactions: ctx.transactions.map((t) => ({ id: t.id, amount: t.amount, status: t.status, gateway: t.gateway_status, order: t.order_id, merchant: t.merchant, description: t.description, method: t.method, date: t.created_at.slice(0, 10) })),
+    actions_on_file: ctx.serviceRecords.map((r) => ({ id: r.id, type: r.type, status: r.status, order: r.order_id })),
+    tickets: ctx.tickets,
     open_tickets: ctx.highlights.openTickets,
   };
 }

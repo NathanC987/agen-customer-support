@@ -39,6 +39,8 @@ function seedScenarioCustomers() {
     ["cus_sofia", "Sofia Alvarez", "sofia.alvarez@example.com", "+34 612 555 019", "standard", "Madrid, ES", "Unable to log in", 250],
     ["cus_liam", "Liam O'Brien", "liam.obrien@example.com", "+353 87 555 0172", "standard", "Dublin, IE", "Unrecognized charges (fraud)", 180],
     ["cus_aisha", "Aisha Khan", "aisha.khan@example.com", "+44 7700 900123", "premium", "London, UK", "Cancel order & upgrade plan", 500],
+    // Blank baseline customer: healthy account, free plan, no orders/transactions/tickets — for free-form demos
+    ["cus_base", "Alex Morgan", "alex.morgan@example.com", "+1 555 0199", "standard", "Chicago, US", "General customer (no scenario)", 30],
   ];
   for (const [id, name, email, phone, tier, location, scenario, ageDays] of customers) {
     run(
@@ -70,6 +72,9 @@ function seedScenarioCustomers() {
   sub("cus_sofia", "pro", "active");
   sub("cus_liam", "free", "active");
   sub("cus_aisha", "pro", "active");
+  // fixed values (no rand()) so adding this customer doesn't shift the seeded history
+  run("INSERT INTO accounts (customer_id, status, failed_login_attempts, last_login_at, two_factor) VALUES (?,?,?,?,?)", "cus_base", "active", 0, ago(6 * HOUR), 0);
+  run("INSERT INTO subscriptions (customer_id, plan, status, sync_status, renews_at) VALUES (?,?,?,?,?)", "cus_base", "free", "active", "ok", iso(NOW + 180 * DAY));
 
   const order = (
     id: string, customer: string, status: string, items: object[], deliveredItems: object[] | null, createdAgo: number, deliveredAgo: number | null,

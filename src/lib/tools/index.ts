@@ -12,6 +12,7 @@ import {
   listTransactions,
 } from "@/lib/db/repo";
 import { searchKb } from "@/lib/agents/knowledge";
+import { CATALOG, PLANS, findProducts, getProduct } from "@/lib/catalog";
 import type { Intent, Order, Team, Transaction } from "@/lib/types";
 
 export interface ToolContext {
@@ -19,7 +20,7 @@ export interface ToolContext {
   conversationId: string;
   intent: Intent | null;
   escalation: { reason: string; team: Team } | null;
-  outcome: { status: "resolved" | "awaiting_customer" | "needs_escalation"; summary: string; confidence: number } | null;
+  outcome: { status: "answered" | "resolved" | "awaiting_customer" | "needs_escalation"; summary: string; confidence: number } | null;
 }
 
 export type ToolKind = "read" | "action" | "control";
@@ -40,6 +41,8 @@ export interface ActionResult {
 }
 
 const AUTO_REFUND_LIMIT = 500;
+/** Orders above this need a human to approve (fraud / high-value check). */
+const AUTO_ORDER_LIMIT = 1000;
 /** Simulated backend fault: the entitlement service keeps failing for these accounts. */
 const PERSISTENT_SYNC_FAILURES = new Set(["cus_john"]);
 
@@ -211,6 +214,19 @@ export const TOOLS: Record<string, Tool> = {
     decl: { name: "search_knowledge_base", description: "Search FAQs, product docs, policies and troubleshooting guides.", parametersJsonSchema: p({ query: S("Search query") }, ["query"]) },
     run: (a, ctx) => searchKb(str(a.query), ctx.intent, 3),
   },
+  browse_products: {
+    kind: "read",
+    label: "Browse catalog",
+    decl: {
+      name: "browse_products",
+      description: "Search the Nimbus Store catalog: SKU, name, price, stock and description. Empty query lists everything.",
+      parametersJsonSchema: p({ query: S("Product name, category or keyword (optional)") }),
+    },
+    run: (a) => {
+      const hits = findProducts(str(a.query));
+      return hits.length ? hits : { matches: [], note: "No matching product", all_products: CATALOG.map((x) => x.name) };
+    },
+  },
 
   /* ---------------- actions (Action Execution Agent) ---------------- */
   cancel_order: {
@@ -222,6 +238,7 @@ export const TOOLS: Record<string, Tool> = {
       if ("error" in o) return o;
       if (o.status !== "processing") return { error: `Order is ${o.status} and can no longer be cancelled. Offer a return instead.` };
       run("UPDATE orders SET status = 'cancelled' WHERE id = ?", o.id);
+      run("UPDATE service_records SET status = 'cancelled' WHERE type = 'order' AND order_id = ? AND customer_id = ?", o.id, ctx.customerId);
       const rec = createServiceRecord({ type: "cancellation", customer_id: ctx.customerId, order_id: o.id, conversation_id: ctx.conversationId, status: "completed", details: {} }, "CXL");
       const txn = capturedTxnForOrder(ctx.customerId, o.id);
       const refund = txn ? refundTxn(ctx, txn, txn.amount, "Order cancelled") : null;
@@ -383,12 +400,72 @@ export const TOOLS: Record<string, Tool> = {
       return { success: true, ref: rec.id, summary: `${sub.plan} subscription reactivated` };
     },
   },
+  place_order: {
+    kind: "action",
+    label: "Place order",
+    decl: {
+      name: "place_order",
+      description: `Place a new order for catalog items, charged to the customer's saved payment method. Only call once the customer has clearly asked to buy (item + quantity known). Orders over $${AUTO_ORDER_LIMIT} return requires_approval.`,
+      parametersJsonSchema: p(
+        {
+          items: {
+            type: "array",
+            description: "Items to buy",
+            items: { type: "object", properties: { sku: S("Catalog SKU"), qty: { type: "integer", description: "Quantity (default 1)" } }, required: ["sku"] },
+          },
+        },
+        ["items"],
+      ),
+    },
+    run: (a, ctx): ActionResult | { error: string; requires_approval?: boolean } => {
+      const acc = getAccount(ctx.customerId);
+      if (acc?.status === "locked") return { error: "Account is locked — unlock it before placing an order" };
+      const raw = Array.isArray(a.items) ? (a.items as { sku?: unknown; qty?: unknown }[]) : [];
+      if (!raw.length) return { error: "items is required" };
+      const lines = [];
+      for (const it of raw) {
+        const prod = getProduct(str(it.sku));
+        if (!prod) return { error: `Unknown SKU ${str(it.sku)}. Use browse_products to find the right one.` };
+        if (!prod.inStock) return { error: `${prod.name} is out of stock` };
+        const qty = Math.max(1, Math.min(10, Math.round(num(it.qty)) || 1));
+        lines.push({ sku: prod.sku, name: prod.name, qty, price: prod.price });
+      }
+      const total = Math.round(lines.reduce((t, l) => t + l.price * l.qty, 0) * 100) / 100;
+      if (total > AUTO_ORDER_LIMIT)
+        return { error: `Order total $${total.toFixed(2)} exceeds the $${AUTO_ORDER_LIMIT} automated limit. Escalate to Billing for approval.`, requires_approval: true };
+      const premium = getCustomer(ctx.customerId)?.tier === "premium";
+      const orderId = `ORD${Math.floor(20000 + Math.random() * 70000)}`;
+      const created = nowIso();
+      run(
+        "INSERT INTO orders (id, customer_id, status, total, items, delivered_items, created_at, delivered_at) VALUES (?,?,?,?,?,?,?,?)",
+        orderId, ctx.customerId, "processing", total, JSON.stringify(lines), null, created, null,
+      );
+      const method = listTransactions(ctx.customerId, 1)[0]?.method ?? "Visa •••• 4242";
+      const txnId = `TXN-${Math.floor(10000 + Math.random() * 89999)}`;
+      run(
+        "INSERT INTO transactions (id, customer_id, order_id, amount, status, gateway_status, method, merchant, description, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        txnId, ctx.customerId, orderId, total, "succeeded", "captured", method, "Nimbus Store", `Order ${orderId}`, created,
+      );
+      const eta = new Date(Date.now() + (premium ? 2 : 5) * 86_400_000).toDateString();
+      createServiceRecord({ type: "order", customer_id: ctx.customerId, order_id: orderId, conversation_id: ctx.conversationId, status: "processing", details: { total, txn: txnId, eta } }, "NEW");
+      return {
+        success: true,
+        ref: orderId,
+        summary: `Order ${orderId} placed — $${total.toFixed(2)} charged to ${method}, ${premium ? "free express shipping, " : ""}arrives by ${eta}`,
+        order_id: orderId,
+        total,
+        charged_to: method,
+        eta,
+        items: lines,
+      };
+    },
+  },
   upgrade_plan: {
     kind: "action",
     label: "Change plan",
     decl: {
       name: "upgrade_plan",
-      description: "Change the customer's plan. Upgrades are prorated and immediate.",
+      description: "Change the customer's membership plan (upgrade or downgrade). Upgrades are prorated and charged now; downgrades are immediate with a prorated credit.",
       parametersJsonSchema: p({ plan: { type: "string", enum: ["free", "pro", "premium"] } }, ["plan"]),
     },
     run: (a, ctx): ActionResult | { error: string } => {
@@ -396,12 +473,28 @@ export const TOOLS: Record<string, Tool> = {
       const plan = str(a.plan);
       if (!sub) return { error: "No subscription found" };
       if (sub.plan === plan) return { error: `Customer is already on ${plan}` };
-      const prices: Record<string, number> = { free: 0, pro: 49, premium: 99 };
-      const prorated = Math.max(0, Math.round((prices[plan] - prices[sub.plan]) * 0.6 * 100) / 100);
-      run("UPDATE subscriptions SET plan = ?, status = 'active' WHERE customer_id = ?", plan, ctx.customerId);
-      if (plan === "premium") run("UPDATE customers SET tier = 'premium' WHERE id = ?", ctx.customerId);
-      const rec = createServiceRecord({ type: "plan_change", customer_id: ctx.customerId, order_id: null, conversation_id: ctx.conversationId, status: "completed", details: { from: sub.plan, to: plan, prorated } }, "PLN");
-      return { success: true, ref: rec.id, summary: `Plan changed ${sub.plan} → ${plan} (prorated charge $${prorated.toFixed(2)})`, prorated_charge: prorated };
+      if (!(plan in PLANS)) return { error: `Unknown plan ${plan}` };
+      const prices: Record<string, number> = { free: PLANS.free.price, pro: PLANS.pro.price, premium: PLANS.premium.price };
+      const diff = Math.round((prices[plan] - prices[sub.plan]) * 0.6 * 100) / 100; // ~60% of the year left
+      const upgrade = diff > 0;
+      run("UPDATE subscriptions SET plan = ?, status = 'active', sync_status = 'ok' WHERE customer_id = ?", plan, ctx.customerId);
+      run("UPDATE customers SET tier = ? WHERE id = ?", plan === "premium" ? "premium" : "standard", ctx.customerId);
+      if (diff !== 0) {
+        const method = listTransactions(ctx.customerId, 1)[0]?.method ?? "Visa •••• 4242";
+        run(
+          "INSERT INTO transactions (id, customer_id, order_id, amount, status, gateway_status, method, merchant, description, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+          `TXN-${Math.floor(10000 + Math.random() * 89999)}`, ctx.customerId, null, Math.abs(diff), upgrade ? "succeeded" : "refunded", upgrade ? "captured" : "reversed", method, "Nimbus Store",
+          `Nimbus ${plan} plan — prorated ${upgrade ? "upgrade charge" : "downgrade credit"}`, nowIso(),
+        );
+      }
+      const rec = createServiceRecord({ type: "plan_change", customer_id: ctx.customerId, order_id: null, conversation_id: ctx.conversationId, status: "completed", details: { from: sub.plan, to: plan, prorated: diff } }, "PLN");
+      return {
+        success: true,
+        ref: rec.id,
+        summary: `Plan changed ${sub.plan} → ${plan} (${upgrade ? `prorated charge $${diff.toFixed(2)}` : diff < 0 ? `prorated credit $${Math.abs(diff).toFixed(2)}` : "no charge"})`,
+        prorated_amount: diff,
+        new_perks: PLANS[plan as keyof typeof PLANS].perks,
+      };
     },
   },
 
@@ -430,7 +523,11 @@ export const TOOLS: Record<string, Tool> = {
       description: "Call exactly once, right before your final reply, to record the state of the issue.",
       parametersJsonSchema: p(
         {
-          status: { type: "string", enum: ["resolved", "awaiting_customer", "needs_escalation"], description: "resolved = issue fully handled; awaiting_customer = you asked the customer something" },
+          status: {
+            type: "string",
+            enum: ["answered", "resolved", "awaiting_customer", "needs_escalation"],
+            description: "answered = informational question / chit-chat answered, no problem to fix; resolved = a problem or request was fully handled with actions; awaiting_customer = you asked the customer something; needs_escalation = a human is required",
+          },
           summary: S("One sentence on what was done / what is pending"),
           confidence: { type: "number", description: "0..1 confidence that the issue is correctly handled" },
         },

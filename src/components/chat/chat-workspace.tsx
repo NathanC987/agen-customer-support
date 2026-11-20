@@ -361,7 +361,7 @@ export function ChatWorkspace({ customers, llmReady, model }: { customers: Custo
           <div ref={scrollRef} className="scrollbar-thin bg-grid flex-1 overflow-y-auto">
             <div className="mx-auto flex max-w-3xl flex-col gap-5 px-4 py-6">
               {messages.length === 0 ? (
-                <EmptyState customerId={customerId} onPick={runScenario} disabled={busy} />
+                <EmptyState customerId={customerId} onPick={runScenario} onAsk={(q) => send(q)} disabled={busy} />
               ) : (
                 messages.map((m) => <MessageBubble key={m.id} message={m} ticket={ticket} customerName={customer?.name ?? "Customer"} />)
               )}
@@ -427,7 +427,26 @@ export function ChatWorkspace({ customers, llmReady, model }: { customers: Custo
   );
 }
 
-function EmptyState({ customerId, onPick, disabled }: { customerId: string; onPick: (s: (typeof SCENARIOS)[number]) => void; disabled: boolean }) {
+const QUICK_PROMPTS = [
+  "What can you help me with?",
+  "What are my recent orders and charges?",
+  "What do you know about the AuraSound headphones?",
+  "I'd like to buy a Nimbus Smart Desk Lamp",
+  "What's the difference between Pro and Premium?",
+  "Downgrade my plan to Free",
+];
+
+function EmptyState({
+  customerId,
+  onPick,
+  onAsk,
+  disabled,
+}: {
+  customerId: string;
+  onPick: (s: (typeof SCENARIOS)[number]) => void;
+  onAsk: (q: string) => void;
+  disabled: boolean;
+}) {
   return (
     <div className="py-6">
       <div className="mb-6 text-center">
@@ -436,9 +455,23 @@ function EmptyState({ customerId, onPick, disabled }: { customerId: string; onPi
         </span>
         <h2 className="text-lg font-semibold">How can we help today?</h2>
         <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-          Type a message, or run a scenario from the problem statement. Each one switches to a seeded customer whose data triggers that workflow.
+          Chat freely as the selected customer — Nova knows their orders, payments and plan, and can answer questions or get things done. Or run a scenario from the problem statement below.
         </p>
       </div>
+      <div className="mb-6 flex flex-wrap justify-center gap-2">
+        {QUICK_PROMPTS.map((q) => (
+          <button
+            key={q}
+            type="button"
+            disabled={disabled}
+            onClick={() => onAsk(q)}
+            className="rounded-full border bg-card px-3 py-1.5 text-xs transition-colors hover:border-primary/40 hover:bg-accent/40 disabled:opacity-50"
+          >
+            {q}
+          </button>
+        ))}
+      </div>
+      <p className="mb-2.5 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">Problem-statement scenarios</p>
       <div className="grid gap-2.5 sm:grid-cols-2">
         {SCENARIOS.map((s) => {
           const suggested = s.customerId === customerId;

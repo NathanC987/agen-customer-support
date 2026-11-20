@@ -261,7 +261,7 @@ export const KB_SEED: SeedArticle[] = [
     tags: ["subscription", "premium", "pro", "plan", "billing cycle", "renewal"],
     intents: ["subscription_issue", "plan_change", "billing_question"],
     content:
-      "Nimbus offers Free, Pro ($49/yr) and Premium ($99/yr). Premium includes priority 15-minute support, free express shipping and extended 60-day returns. Upgrades are prorated and active immediately; downgrades apply at renewal. Premium activation normally takes under a minute after payment.",
+      "Nimbus offers Free, Pro ($49/yr) and Premium ($99/yr). Premium includes priority 15-minute support, free express shipping and extended 60-day returns. Upgrades are prorated and active immediately; downgrades are also immediate, with a prorated credit to the original payment method. Premium activation normally takes under a minute after payment.",
     workflow: null,
   },
   {

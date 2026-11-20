@@ -55,6 +55,9 @@ function tracer(emit: Emit) {
   };
 }
 
+/** Low-stakes intents: if the LLM is down we answer from the knowledge base instead of opening a ticket. */
+const SELF_SERVE = new Set(["greeting", "general_inquiry", "product_question", "feedback", "place_order", "order_status", "account_update", "plan_change"]);
+
 const fallbackReason = (e: unknown) =>
   e instanceof LlmUnavailableError ? (e.reason === "no_key" ? "no Gemini API key configured" : e.reason === "rate_limited" ? "Gemini rate limit reached" : "Gemini error") : "unexpected error";
 
@@ -195,7 +198,10 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
 
   // ---- 7b. Escalation Decision Agent (post-check) ----
   let decision: EscalationDecision;
-  if (!llmAvailable && !openTicket) {
+  const selfServeFallback = !llmAvailable && !openTicket && pre.decision !== "escalate" && SELF_SERVE.has(intent.intent);
+  if (selfServeFallback) {
+    decision = { decision: "auto_resolve", team: pre.team, reasons: ["AI reasoning unavailable — low-stakes question answered from the knowledge base"], signals: {} };
+  } else if (!llmAvailable && !openTicket) {
     decision = { decision: "escalate", team: pre.team, reasons: [...pre.reasons, "AI reasoning unavailable — fail-safe escalation"], signals: {} };
   } else if (mode === "escalate") {
     decision = { ...pre, team: toolCtx.escalation?.team ?? pre.team };
@@ -211,7 +217,9 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
             ? `Already escalated (ticket #${openTicket.id}) — message added to ticket`
             : toolCtx.outcome?.status === "resolved"
               ? `Auto-resolved · confidence ${Math.round((toolCtx.outcome.confidence ?? 0) * 100)}%`
-              : "Waiting on customer — no escalation needed",
+              : toolCtx.outcome?.status === "answered"
+                ? "Question answered — no human needed"
+                : "Waiting on customer — no escalation needed",
       data: { ...decision, outcome: toolCtx.outcome },
     });
   }
@@ -234,6 +242,12 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
   }
 
   // ---- compose reply ----
+  if (!replyText && selfServeFallback) {
+    const top = knowledge?.hits[0];
+    replyText = top
+      ? `I'm having a little trouble thinking this through right now, but here's what I found in our help centre:\n\n**${top.title}** — ${top.excerpt}\n\nIf that doesn't answer it, send your message again in a minute and I'll take care of it.`
+      : "I'm having a little trouble right now — could you send that again in a minute? I can help with orders, refunds, returns, your plan, account access and product questions.";
+  }
   if (!replyText) {
     replyText = ticket
       ? `I'm sorry for the trouble. I've passed this to our ${TEAM_LABEL[ticket.team]} team with everything we've discussed, so you won't need to repeat yourself. Your ticket is **#${ticket.id}** and a specialist will respond within ${responseTargetMinutes(ctx.customer.tier, ticket.priority)} minutes.`
@@ -245,7 +259,16 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
   }
 
   // ---- 9. lifecycle update (Resolution Tracking) ----
-  const status: ConversationStatus = ticket || openTicket ? "escalated" : toolCtx.outcome?.status === "resolved" ? "resolved" : "awaiting_customer";
+  const outcomeStatus = toolCtx.outcome?.status;
+  const status: ConversationStatus =
+    ticket || openTicket
+      ? "escalated"
+      : outcomeStatus === "resolved"
+        ? "resolved"
+        : outcomeStatus === "answered" || selfServeFallback || (!outcomeStatus && replyText && !replyText.trim().endsWith("?"))
+          ? // a plain Q&A turn keeps an already-resolved issue resolved; otherwise the chat just stays open
+            prevState.lifecycle === "resolved" ? "resolved" : "active"
+          : "awaiting_customer";
   state.lifecycle = status;
   state.openQuestions = status === "awaiting_customer" ? [replyText.split("\n").pop()!.slice(0, 160)] : [];
   updateConversation(conversationId, {
@@ -257,13 +280,20 @@ export async function handleTurn(input: { customerId: string; conversationId?: s
     confidence: toolCtx.outcome?.confidence ?? intent.confidence,
     summary: toolCtx.outcome?.summary || intent.summary,
     issue_state: state,
-    resolved_at: status === "resolved" ? new Date().toISOString() : null,
-    resolution_type: status === "resolved" ? "auto" : null,
+    resolved_at: status === "resolved" ? (prevState.lifecycle === "resolved" && outcomeStatus !== "resolved" ? conversation.resolved_at : new Date().toISOString()) : null,
+    resolution_type: status === "resolved" ? (prevState.lifecycle === "resolved" ? (conversation.resolution_type ?? "auto") : "auto") : null,
   });
 
   const respStep = trace.start("response", "Responding to customer");
   const assistant = addMessage(conversationId, "assistant", replyText, { actions, ticketId: ticket?.id ?? openTicket?.id });
-  trace.finish(respStep, { summary: status === "resolved" ? "Resolved — CSAT survey offered" : status === "escalated" ? "Customer informed of escalation" : "Asked customer for next input", data: { outcome: toolCtx.outcome } });
+  trace.finish(respStep, { summary:
+      status === "escalated"
+        ? "Customer informed of escalation"
+        : outcomeStatus === "resolved"
+          ? "Resolved without a ticket — CSAT survey offered"
+          : status === "awaiting_customer"
+            ? "Asked customer for next input"
+            : "Answered — no ticket needed", data: { outcome: toolCtx.outcome } });
 
   const durationMs = Date.now() - t0;
   const runId = saveRun({ conversation_id: conversationId, message_id: assistant.id, steps: trace.steps, llm_calls: counter.llmCalls, duration_ms: durationMs });

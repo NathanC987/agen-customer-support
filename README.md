@@ -23,6 +23,15 @@ Without a key the app still runs in **heuristic fail-safe mode**: intent is clas
 | `npm run eval` | Runs the 6 problem-statement scenarios through the real orchestrator + Gemini and checks intent, tool calls and escalation (paced 20 s apart for free-tier limits; `EVAL_DELAY_MS` to change) |
 | `npm run lint` / `npm run typecheck` / `npm run build` | Quality gates |
 
+## Free-form chat
+
+Besides the scenarios, you can chat with Nova as any customer like a normal assistant (try the suggestion chips in an empty chat). Nova sees the customer's full profile (orders, transactions, plan and renewal, actions on file, tickets) plus the conversation, and can:
+
+- answer questions ("How can you help me?", "What do you know about the AuraSound headphones?", "What did I order last month?")
+- do things **without a ticket**: place an order from the catalog, cancel a processing order (auto-refund), returns/replacements, refunds ≤ $500, plan upgrades/downgrades (prorated), password resets and unlocks
+
+A ticket is only created when a human is genuinely needed: approval limits (refund > $500, order > $1000), fraud/legal/security, a failed fix or low confidence (< 70%), or the customer insisting on a human. Every action updates the customer panel immediately and counts toward "AI actions" on the dashboard.
+
 ## The agent pipeline
 
 ```
@@ -77,6 +86,7 @@ Each scenario card in the empty chat switches to a seeded customer whose data tr
 | Premium not activated | John Doe (premium, 3 prior tickets) | Payment OK, sync failed → retries sync → still fails (ENT-504) → **Engineering ticket**, 15 min SLA |
 | Unrecognized charges | Liam (standard) | Mandatory escalation: gathers the suspicious transactions, no actions → **Trust & Safety ticket** (urgent) |
 | Cancel order & upgrade | Aisha (premium) | Two actions in one turn: cancels a processing order (auto-refund) and upgrades Pro → Premium |
+| *(free-form)* | Alex Morgan (standard, blank) | No scenario data: active account, free plan, no orders or tickets. Use it to ask anything and show the agent investigating honestly (e.g. finds no orders and asks for an order ID instead of inventing one) |
 
 Then open the ticket, assign it or change its status, and watch the update appear in the customer's chat. Submit CSAT and see it on the dashboard.
 

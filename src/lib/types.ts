@@ -24,6 +24,7 @@ export const INTENTS = [
   "legal_request",
   "data_breach",
   "account_update",
+  "place_order",
   "product_question",
   "human_request",
   "general_inquiry",
@@ -221,7 +222,7 @@ export interface TicketEvent {
 
 export interface ServiceRecord {
   id: string;
-  type: "return" | "refund" | "replacement" | "cancellation" | "password_reset" | "unlock" | "sync_retry" | "plan_change" | "reactivation" | "return_label";
+  type: "return" | "refund" | "replacement" | "cancellation" | "password_reset" | "unlock" | "sync_retry" | "plan_change" | "reactivation" | "return_label" | "order";
   customer_id: string;
   order_id: string | null;
   status: string;
